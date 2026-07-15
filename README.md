@@ -13,6 +13,8 @@
 - Codex / OpenAI Responses、CC / Anthropic Messages、OpenAI Chat 兼容接口
 - 自定义第三方 API Base URL、Model ID、API Key 和超时
 
+完整界面说明、标注截图和推荐分析流程见 [产品解析与操作指南](docs/PRODUCT_GUIDE.md)。
+
 ## 启动
 
 ```bash
