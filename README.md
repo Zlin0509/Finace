@@ -5,6 +5,7 @@
 ## 功能
 
 - 持仓记账、净值分析和风险指标
+- 同花顺官方 A 股行情快照、历史日 K 与基金披露持仓贡献分析
 - 买入持有、双均线、动量轮动及定投回测
 - Walk-Forward 参数自优化、样本外验证、稳定性与过拟合诊断
 - 手续费、滑点、基准权益、回撤和逐笔交易记录
@@ -25,10 +26,21 @@ streamlit run src/ui/app.py
 
 ```bash
 fund --help
+fund stock 600519.SH --days 365 --adjust forward
 fund quant 510300 --start 2020-01-01 --end 2026-01-01 --strategy ma_cross
 fund auto-optimize 510300 --start 2018-01-01 --end 2026-01-01 --strategy ma_cross
 fund news 510300 --scope keyword --limit 10
 ```
+
+## A 股行情接口
+
+在同花顺金融数据服务后台创建 API Key，然后通过“全局系统设置 > A股行情接口”在当前会话中配置。也可以设置环境变量：
+
+```bash
+export HITHINK_FINANCE_API_KEY="your-api-key"
+```
+
+行情数据来自同花顺 Financial-API，当前接入最新行情快照和前复权/不复权/后复权历史日 K。基金持仓贡献基于基金公开披露的季度持仓，仅表示已披露 A 股对当日涨跌的估算贡献，不代表实时完整仓位或最终基金净值。
 
 ## 第三方模型接口
 

@@ -6,9 +6,10 @@ def test_sidebar_groups_and_navigation_work():
 
     assert not app.exception
     sidebar_labels = [button.label for button in app.sidebar.button]
-    assert sidebar_labels[:8] == [
+    assert sidebar_labels[:9] == [
         "📊 资产全景看板",
         "🔎 深度个基透视",
+        "📈 A股行情分析",
         "🧪 量化回测实验室",
         "🧮 定投复利计算器",
         "⚖️ 智能资产配置",
@@ -16,6 +17,15 @@ def test_sidebar_groups_and_navigation_work():
         "🤖 AI 智能诊断",
         "⚙️ 全局系统设置",
     ]
+
+    stock_button = next(
+        button for button in app.sidebar.button if button.label == "📈 A股行情分析"
+    )
+    stock_button.click().run(timeout=30)
+
+    assert not app.exception
+    assert app.session_state["active_page"] == "📈 A股行情分析"
+    assert any(button.label == "查询行情" for button in app.button)
 
     quant_button = next(
         button for button in app.sidebar.button if button.label == "🧪 量化回测实验室"

@@ -6,6 +6,10 @@ dataSources:
   cacheEnabled: true
   cacheTtlHours: 6            # 缓存有效期(小时)
   cachePath: "data/cache"
+  stockMarket:
+    provider: "hithink"
+    baseUrl: "https://fuyao.aicubes.cn"
+    timeoutSeconds: 10
 
 # 持仓配置
 portfolio:

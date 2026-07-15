@@ -106,11 +106,17 @@ class FundDataAPI:
             
         return df
 
-    def get_fund_portfolio(self, fund_code: str, year: str = "2023") -> pd.DataFrame:
+    def get_fund_portfolio(self, fund_code: str, year: str = None) -> pd.DataFrame:
         """获取基金持仓(股票/债券)"""
-        try:
-            df = ak.fund_portfolio_hold_em(symbol=fund_code, date=year)
-            return df
-        except Exception as e:
-            print(f"Error getting portfolio for {fund_code}: {e}")
-            return pd.DataFrame()
+        years = [year] if year else [str(datetime.now().year), str(datetime.now().year - 1)]
+        last_error = None
+        for report_year in years:
+            try:
+                df = ak.fund_portfolio_hold_em(symbol=fund_code, date=report_year)
+                if not df.empty:
+                    return df
+            except Exception as e:
+                last_error = e
+        if last_error:
+            print(f"Error getting portfolio for {fund_code}: {last_error}")
+        return pd.DataFrame()

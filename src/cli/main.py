@@ -3,6 +3,7 @@ import pandas as pd
 from rich.console import Console
 from rich.table import Table
 from src.data.fund_api import FundDataAPI
+from src.data.stock_api import AStockDataAPI, StockDataError
 from src.portfolio.manager import PortfolioManager
 from src.analysis.engine import AnalysisEngine
 from src.backtest.engine import BacktestEngine
@@ -34,6 +35,50 @@ def info(fund_code):
     for k, v in info_data.items():
         table.add_row(str(k), str(v))
         
+    console.print(table)
+
+
+@cli.command()
+@click.argument("stock_code")
+@click.option("--days", default=30, show_default=True, type=click.IntRange(2, 3650))
+@click.option(
+    "--adjust",
+    default="forward",
+    show_default=True,
+    type=click.Choice(["none", "forward", "backward"]),
+)
+def stock(stock_code, days, adjust):
+    """查看 A 股最新行情和近期日线摘要。"""
+    end = pd.Timestamp.now().date()
+    start = end - pd.Timedelta(days=days)
+    api = AStockDataAPI()
+    try:
+        snapshot = api.get_snapshot([stock_code])
+        history = api.get_history(stock_code, start, end, adjust=adjust)
+    except (StockDataError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if snapshot.empty or history.empty:
+        raise click.ClickException("没有获取到可用的 A 股行情")
+
+    quote = snapshot.iloc[0]
+    console.print(
+        f"[bold]{quote['stock_code']}[/bold]  "
+        f"最新价 {quote['last_price']:.2f}  "
+        f"涨跌幅 {quote['change_pct']:+.2f}%"
+    )
+    table = Table(title=f"最近 {min(10, len(history))} 个交易日")
+    for label in ["日期", "开盘", "最高", "最低", "收盘", "成交额"]:
+        table.add_column(label, justify="right" if label != "日期" else "left")
+    for _, row in history.tail(10).iloc[::-1].iterrows():
+        table.add_row(
+            row["date"].strftime("%Y-%m-%d"),
+            f"{row['open']:.2f}",
+            f"{row['high']:.2f}",
+            f"{row['low']:.2f}",
+            f"{row['close']:.2f}",
+            f"{row['turnover']:,.0f}",
+        )
     console.print(table)
 
 @cli.command()

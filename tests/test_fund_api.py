@@ -29,3 +29,21 @@ def test_stale_nav_cache_is_used_when_refresh_fails(tmp_path, monkeypatch):
     assert result["unit_nav"].tolist() == [1.0, 1.1]
     assert result.attrs["cache_stale"] is True
     assert "历史缓存" in result.attrs["data_warning"]
+
+
+def test_latest_portfolio_falls_back_to_previous_year(monkeypatch):
+    calls = []
+    current_year = str(datetime.now().year)
+    previous_year = str(datetime.now().year - 1)
+
+    def fetch(symbol, date):
+        calls.append((symbol, date))
+        if date == current_year:
+            return pd.DataFrame()
+        return pd.DataFrame({"股票代码": ["600519"]})
+
+    monkeypatch.setattr("src.data.fund_api.ak.fund_portfolio_hold_em", fetch)
+    result = FundDataAPI().get_fund_portfolio("510300")
+
+    assert result["股票代码"].tolist() == ["600519"]
+    assert calls == [("510300", current_year), ("510300", previous_year)]

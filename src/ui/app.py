@@ -3,10 +3,17 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from plotly.subplots import make_subplots
 
 from src.data.fund_api import FundDataAPI
+from src.data.stock_api import AStockDataAPI, StockDataError, normalize_a_share_code
 from src.portfolio.manager import PortfolioManager
 from src.analysis.engine import AnalysisEngine
+from src.analysis.stock_analyzer import (
+    analyze_stock_history,
+    calculate_holding_contributions,
+    normalize_fund_stock_holdings,
+)
 from src.backtest.engine import BacktestEngine
 from src.strategy.optimizer import PortfolioOptimizer
 from src.strategy.walk_forward import WalkForwardOptimizer
@@ -311,7 +318,7 @@ st.markdown("""
 # ==========================================
 # 初始化与缓存
 # ==========================================
-COMPONENTS_VERSION = "2026-07-15.3"
+COMPONENTS_VERSION = "2026-07-15.4"
 
 
 @st.cache_resource
@@ -343,6 +350,13 @@ def get_components(version: str):
 comps = get_components(COMPONENTS_VERSION)
 api = comps["api"]
 pm = comps["pm"]
+if "stock_api_client" not in st.session_state:
+    stock_defaults = config.get("dataSources", {}).get("stockMarket", {})
+    st.session_state.stock_api_client = AStockDataAPI(
+        base_url=stock_defaults.get("baseUrl", "https://fuyao.aicubes.cn"),
+        timeout_seconds=float(stock_defaults.get("timeoutSeconds", 10)),
+    )
+stock_api = st.session_state.stock_api_client
 
 # ==========================================
 # 侧边栏导航
@@ -377,7 +391,7 @@ with st.sidebar:
 
     nav_groups = {
         "概览": ["📊 资产全景看板", "🔎 深度个基透视"],
-        "策略与研究": ["🧪 量化回测实验室", "🧮 定投复利计算器", "⚖️ 智能资产配置", "📰 市场新闻检索"],
+        "策略与研究": ["📈 A股行情分析", "🧪 量化回测实验室", "🧮 定投复利计算器", "⚖️ 智能资产配置", "📰 市场新闻检索"],
         "智能与系统": ["🤖 AI 智能诊断", "⚙️ 全局系统设置"],
     }
     if "active_page" not in st.session_state:
@@ -662,7 +676,316 @@ elif page == "🔎 深度个基透视":
                 
                 st.plotly_chart(fig, width="stretch")
 
-# ----------------- 页面三：量化回测实验室 -----------------
+                st.markdown("---")
+                st.markdown("#### 披露持仓股票行情贡献")
+                if not stock_api.configured:
+                    st.info("A 股行情接口尚未配置，可在全局系统设置中填写同花顺 API Key。")
+                else:
+                    load_holdings = st.button(
+                        "刷新持仓行情",
+                        key=f"load_fund_stock_holdings_{fund_code}",
+                        type="primary",
+                    )
+                    if load_holdings:
+                        try:
+                            with st.spinner("正在匹配最新披露持仓与 A 股行情..."):
+                                raw_holdings = api.get_fund_portfolio(fund_code)
+                                normalized_holdings = normalize_fund_stock_holdings(raw_holdings)
+                                if normalized_holdings.empty:
+                                    raise ValueError("没有找到可匹配的 A 股持仓披露")
+                                quotes = stock_api.get_snapshot(
+                                    normalized_holdings["stock_code"].tolist()
+                                )
+                                contribution = calculate_holding_contributions(
+                                    normalized_holdings, quotes
+                                )
+                                st.session_state.fund_stock_analysis = {
+                                    "fund_code": fund_code,
+                                    "items": contribution,
+                                }
+                        except (StockDataError, ValueError) as exc:
+                            st.error(str(exc))
+
+                    fund_stock_result = st.session_state.get("fund_stock_analysis")
+                    if (
+                        fund_stock_result
+                        and fund_stock_result.get("fund_code") == fund_code
+                    ):
+                        contribution = fund_stock_result["items"]
+                        if contribution.empty:
+                            st.warning("持仓披露中没有可用的 A 股行情")
+                        else:
+                            report_period = contribution["report_period"].dropna()
+                            period_label = (
+                                str(report_period.iloc[0]) if not report_period.empty else "未知"
+                            )
+                            disclosed_weight = contribution["nav_weight_pct"].sum()
+                            quoted_weight = contribution.loc[
+                                contribution["change_pct"].notna(), "nav_weight_pct"
+                            ].sum()
+                            estimated_move = contribution[
+                                "contribution_pct_points"
+                            ].sum(min_count=1)
+
+                            h1, h2, h3 = st.columns(3)
+                            h1.metric("披露持仓覆盖", f"{disclosed_weight:.2f}%")
+                            h2.metric("成功匹配行情", f"{quoted_weight:.2f}%")
+                            h3.metric(
+                                "当日贡献估算",
+                                f"{estimated_move:+.3f} 个百分点"
+                                if pd.notna(estimated_move)
+                                else "--",
+                            )
+                            st.caption(
+                                f"持仓报告期：{period_label}。仅计算已披露且成功匹配的 A 股，"
+                                "不代表基金实时完整仓位或最终净值。"
+                            )
+
+                            display_contribution = contribution.copy()
+                            display_contribution["label"] = (
+                                display_contribution["stock_name"].fillna("")
+                                + " "
+                                + display_contribution["stock_code"]
+                            ).str.strip()
+                            display_contribution = display_contribution.sort_values(
+                                "contribution_pct_points"
+                            )
+                            contribution_fig = go.Figure(
+                                go.Bar(
+                                    x=display_contribution["contribution_pct_points"],
+                                    y=display_contribution["label"],
+                                    orientation="h",
+                                    marker_color=[
+                                        "#DC2626" if value >= 0 else "#15803D"
+                                        for value in display_contribution[
+                                            "contribution_pct_points"
+                                        ].fillna(0)
+                                    ],
+                                    hovertemplate=(
+                                        "%{y}<br>当日贡献 %{x:.3f} 个百分点<extra></extra>"
+                                    ),
+                                )
+                            )
+                            contribution_fig.update_layout(
+                                height=max(300, 38 * len(display_contribution)),
+                                margin=dict(l=0, r=20, t=15, b=20),
+                                xaxis_title="对基金净值的估算贡献（百分点）",
+                                yaxis_title="",
+                                plot_bgcolor="white",
+                                paper_bgcolor="white",
+                            )
+                            st.plotly_chart(contribution_fig, width="stretch")
+
+                            holding_table = contribution.rename(
+                                columns={
+                                    "stock_code": "股票代码",
+                                    "stock_name": "股票名称",
+                                    "nav_weight_pct": "占基金净值 (%)",
+                                    "last_price": "最新价",
+                                    "change_pct": "股票涨跌幅 (%)",
+                                    "contribution_pct_points": "估算贡献 (百分点)",
+                                }
+                            )[
+                                [
+                                    "股票代码",
+                                    "股票名称",
+                                    "占基金净值 (%)",
+                                    "最新价",
+                                    "股票涨跌幅 (%)",
+                                    "估算贡献 (百分点)",
+                                ]
+                            ]
+                            st.dataframe(
+                                holding_table,
+                                hide_index=True,
+                                width="stretch",
+                                height=min(420, 38 * len(holding_table) + 38),
+                                column_config={
+                                    "占基金净值 (%)": st.column_config.NumberColumn(
+                                        format="%.2f%%"
+                                    ),
+                                    "最新价": st.column_config.NumberColumn(format="%.2f"),
+                                    "股票涨跌幅 (%)": st.column_config.NumberColumn(
+                                        format="%+.2f%%"
+                                    ),
+                                    "估算贡献 (百分点)": st.column_config.NumberColumn(
+                                        format="%+.3f"
+                                    ),
+                                },
+                            )
+
+# ----------------- 页面三：A 股行情 -----------------
+elif page == "📈 A股行情分析":
+    st.markdown('<div class="main-header">A 股行情分析</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="sub-text">同花顺官方行情快照、历史日 K 与风险指标。</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not stock_api.configured:
+        st.warning("请先在全局系统设置中配置同花顺 Financial-API Key。")
+
+    lookback_options = {"近 3 个月": 92, "近 1 年": 365, "近 3 年": 1095}
+    adjust_options = {"前复权": "forward", "不复权": "none", "后复权": "backward"}
+    with st.form("stock_quote_form"):
+        s1, s2, s3 = st.columns([1.2, 1, 1])
+        with s1:
+            stock_code_input = st.text_input(
+                "A 股代码",
+                value="600519.SH",
+                placeholder="600519.SH",
+            )
+        with s2:
+            lookback_label = st.selectbox("行情区间", list(lookback_options), index=1)
+        with s3:
+            adjust_label = st.selectbox("复权口径", list(adjust_options), index=0)
+        run_stock_query = st.form_submit_button(
+            "查询行情", type="primary", width="stretch"
+        )
+
+    if run_stock_query:
+        try:
+            normalized_code = normalize_a_share_code(stock_code_input)
+            end_date = datetime.now().date()
+            start_date = end_date - timedelta(days=lookback_options[lookback_label])
+            with st.spinner("正在读取行情快照和历史日 K..."):
+                snapshot = stock_api.get_snapshot([normalized_code])
+                history = stock_api.get_history(
+                    normalized_code,
+                    start_date,
+                    end_date,
+                    adjust=adjust_options[adjust_label],
+                )
+            if snapshot.empty:
+                raise ValueError("行情快照为空，请检查股票代码或接口权限")
+            if history.empty:
+                raise ValueError("历史日 K 为空，请检查查询区间或接口权限")
+            st.session_state.stock_quote_result = {
+                "stock_code": normalized_code,
+                "snapshot": snapshot,
+                "history": history,
+                "adjust_label": adjust_label,
+            }
+        except (StockDataError, ValueError) as exc:
+            st.session_state.pop("stock_quote_result", None)
+            st.error(str(exc))
+
+    stock_result = st.session_state.get("stock_quote_result")
+    if stock_result:
+        snapshot = stock_result["snapshot"].iloc[0]
+        history = stock_result["history"].copy()
+        metrics = analyze_stock_history(history)
+
+        st.markdown(f"### {stock_result['stock_code']}")
+        q1, q2, q3, q4, q5, q6 = st.columns(6)
+        q1.metric(
+            "最新价",
+            f"¥{snapshot['last_price']:,.2f}",
+            f"{snapshot['change_pct']:+.2f}%",
+        )
+        q2.metric("区间收益", f"{metrics['period_return']:+.2%}")
+        q3.metric("最大回撤", f"{metrics['max_drawdown']:.2%}")
+        q4.metric("年化波动", f"{metrics['annual_volatility']:.2%}")
+        q5.metric("当日最高", f"¥{snapshot['high']:,.2f}")
+        q6.metric("当日成交额", f"¥{snapshot['turnover'] / 1e8:,.2f} 亿")
+
+        trend_tab, data_tab = st.tabs(["价格走势", "历史数据"])
+        with trend_tab:
+            history["MA20"] = history["close"].rolling(20).mean()
+            history["MA60"] = history["close"].rolling(60).mean()
+            volume_colors = [
+                "#DC2626" if close >= open_price else "#15803D"
+                for close, open_price in zip(history["close"], history["open"])
+            ]
+            stock_fig = make_subplots(
+                rows=2,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.04,
+                row_heights=[0.72, 0.28],
+            )
+            stock_fig.add_trace(
+                go.Candlestick(
+                    x=history["date"],
+                    open=history["open"],
+                    high=history["high"],
+                    low=history["low"],
+                    close=history["close"],
+                    name="日 K",
+                    increasing_line_color="#DC2626",
+                    decreasing_line_color="#15803D",
+                ),
+                row=1,
+                col=1,
+            )
+            stock_fig.add_trace(
+                go.Scatter(
+                    x=history["date"],
+                    y=history["MA20"],
+                    name="MA20",
+                    line=dict(color="#2563EB", width=1.4),
+                ),
+                row=1,
+                col=1,
+            )
+            stock_fig.add_trace(
+                go.Scatter(
+                    x=history["date"],
+                    y=history["MA60"],
+                    name="MA60",
+                    line=dict(color="#D97706", width=1.4),
+                ),
+                row=1,
+                col=1,
+            )
+            stock_fig.add_trace(
+                go.Bar(
+                    x=history["date"],
+                    y=history["volume"],
+                    name="成交量",
+                    marker_color=volume_colors,
+                ),
+                row=2,
+                col=1,
+            )
+            stock_fig.update_layout(
+                height=620,
+                hovermode="x unified",
+                margin=dict(l=0, r=0, t=30, b=0),
+                legend=dict(orientation="h", y=1.04),
+                xaxis_rangeslider_visible=False,
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+            )
+            stock_fig.update_yaxes(title_text="价格 (CNY)", row=1, col=1)
+            stock_fig.update_yaxes(title_text="成交量", row=2, col=1)
+            st.plotly_chart(stock_fig, width="stretch")
+
+        with data_tab:
+            history_table = history.rename(
+                columns={
+                    "date": "日期",
+                    "open": "开盘",
+                    "high": "最高",
+                    "low": "最低",
+                    "close": "收盘",
+                    "volume": "成交量",
+                    "turnover": "成交额",
+                }
+            )[["日期", "开盘", "最高", "最低", "收盘", "成交量", "成交额"]]
+            st.dataframe(
+                history_table.sort_values("日期", ascending=False),
+                hide_index=True,
+                width="stretch",
+                height=460,
+            )
+
+        st.caption(
+            f"数据源：同花顺 Financial-API · {stock_result['adjust_label']} · "
+            f"{history['date'].min():%Y-%m-%d} 至 {history['date'].max():%Y-%m-%d}"
+        )
+
+# ----------------- 页面四：量化回测实验室 -----------------
 elif page == "🧪 量化回测实验室":
     st.markdown('<div class="main-header">量化回测实验室</div>', unsafe_allow_html=True)
     quant_tab, optimize_tab, dca_tab = st.tabs(["策略择时", "自优化分析", "周期定投"])
@@ -1403,12 +1726,22 @@ elif page == "⚙️ 全局系统设置":
             "cache_hours": 24,
             "timeout_sec": 10
         }
+
+    if "stock_data_config" not in st.session_state:
+        st.session_state.stock_data_config = {
+            "api_key": stock_api.api_key,
+            "base_url": stock_api.base_url,
+            "timeout_sec": int(stock_api.timeout_seconds),
+        }
         
     llm_conf = st.session_state.llm_config
     data_conf = st.session_state.data_config
+    stock_conf = st.session_state.stock_data_config
     
     # ------------------ 设置面板 ------------------
-    tab1, tab2 = st.tabs(["🤖 AI 模型接口设置", "📡 金融数据源设置"])
+    tab1, tab2, tab3 = st.tabs(
+        ["🤖 AI 模型接口设置", "📡 基金数据源设置", "📈 A股行情接口"]
+    )
     
     with tab1:
         st.subheader("第三方模型接口")
@@ -1546,3 +1879,78 @@ elif page == "⚙️ 全局系统设置":
                 
         st.markdown("---")
         st.warning("🚨 **防封禁提示**：本项目使用的 AKShare 数据属于公开网页爬取。请勿将缓存时间设置过低（建议大于 12 小时），否则可能导致您的机器 IP 被天天基金或东方财富的防火墙临时封禁。")
+
+    with tab3:
+        st.subheader("同花顺 Financial-API")
+        st.caption("API Key 仅在当前 Streamlit 会话和进程内使用，不写入项目文件。")
+
+        with st.form("stock_data_settings_form"):
+            stock_api_key = st.text_input(
+                "API Key",
+                value=stock_conf.get("api_key", ""),
+                type="password",
+                placeholder="HITHINK_FINANCE_API_KEY",
+            )
+            sc1, sc2 = st.columns([2, 1])
+            with sc1:
+                stock_base_url = st.text_input(
+                    "API Base URL",
+                    value=stock_conf.get("base_url", "https://fuyao.aicubes.cn"),
+                )
+            with sc2:
+                stock_timeout = st.number_input(
+                    "请求超时 (秒)",
+                    min_value=3,
+                    max_value=60,
+                    value=int(stock_conf.get("timeout_sec", 10)),
+                )
+            sb1, sb2 = st.columns(2)
+            with sb1:
+                save_stock_data = st.form_submit_button(
+                    "保存配置", type="primary", width="stretch"
+                )
+            with sb2:
+                test_stock_data = st.form_submit_button(
+                    "测试连接", width="stretch"
+                )
+
+        if save_stock_data or test_stock_data:
+            new_stock_conf = {
+                "api_key": stock_api_key.strip(),
+                "base_url": stock_base_url.strip() or "https://fuyao.aicubes.cn",
+                "timeout_sec": int(stock_timeout),
+            }
+            st.session_state.stock_data_config = new_stock_conf
+            stock_api.update_config(
+                new_stock_conf["api_key"],
+                new_stock_conf["base_url"],
+                new_stock_conf["timeout_sec"],
+            )
+            if save_stock_data:
+                st.success("A 股行情配置已在当前会话生效。")
+            if test_stock_data:
+                try:
+                    with st.spinner("正在读取 000001.SZ 行情快照..."):
+                        test_quote = stock_api.get_snapshot(["000001.SZ"])
+                    if test_quote.empty:
+                        st.warning("连接成功，但行情快照为空。")
+                    else:
+                        last_price = test_quote.iloc[0]["last_price"]
+                        st.success(f"连接成功：000001.SZ 最新价 ¥{last_price:.2f}")
+                except (StockDataError, ValueError) as exc:
+                    st.error(f"连接失败：{exc}")
+
+        st.link_button(
+            "API Key 管理",
+            "https://fuyao.aicubes.cn/admin/",
+            width="content",
+        )
+        st.markdown("#### 环境变量")
+        stock_env_table = pd.DataFrame(
+            [
+                ["HITHINK_FINANCE_API_KEY", "同花顺行情 API Key"],
+                ["HITHINK_FINANCE_BASE_URL", "可选，自定义兼容地址"],
+            ],
+            columns=["变量", "用途"],
+        )
+        st.dataframe(stock_env_table, hide_index=True, width="stretch")
