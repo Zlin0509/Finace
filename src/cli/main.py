@@ -1,3 +1,7 @@
+import json
+from pathlib import Path
+import sys
+
 import click
 import pandas as pd
 from rich.console import Console
@@ -10,14 +14,36 @@ from src.backtest.engine import BacktestEngine
 from src.strategy.optimizer import PortfolioOptimizer
 from src.strategy.walk_forward import WalkForwardOptimizer
 from src.news.service import NewsService
-import sys
+from src.storage.local_store import LocalStoreError
+from src import __version__
 
 console = Console()
 
 @click.group()
+@click.version_option(version=__version__, prog_name="FundMaster Pro")
 def cli():
     """基金智能分析助手 CLI"""
     pass
+
+
+@cli.command()
+@click.option("--port", default=8501, show_default=True, type=click.IntRange(1, 65535))
+@click.option("--address", default="localhost", show_default=True)
+def ui(port, address):
+    """启动 FundMaster Pro Streamlit 界面。"""
+    from streamlit.web import cli as streamlit_cli
+
+    app_path = Path(__file__).resolve().parents[1] / "ui" / "app.py"
+    sys.argv = [
+        "streamlit",
+        "run",
+        str(app_path),
+        "--server.port",
+        str(port),
+        "--server.address",
+        address,
+    ]
+    streamlit_cli.main()
 
 @cli.command()
 @click.argument('fund_code')
@@ -152,8 +178,62 @@ def portfolio():
 def trade(date, code, action, amount, price, fee):
     """记录一笔交易"""
     pm = PortfolioManager()
-    pm.add_transaction(date, code, action, amount, price, fee)
+    try:
+        pm.add_transaction(date, code, action, amount, price, fee)
+    except (ValueError, LocalStoreError) as exc:
+        raise click.ClickException(str(exc)) from exc
     console.print(f"成功记录交易: {date} {action} {code}", style="green")
+
+
+@cli.command(name="storage-info")
+def storage_info():
+    """查看本地数据库、交易与备份状态。"""
+    manager = PortfolioManager()
+    stats = manager.store.describe()
+    table = Table(title="FundMaster 本地存储")
+    table.add_column("项目", style="cyan")
+    table.add_column("内容")
+    table.add_row("数据库", stats["database_path"])
+    table.add_row("Schema", f"v{stats['schema_version']}")
+    table.add_row("交易记录", str(stats["transaction_count"]))
+    table.add_row("配置项", str(stats["setting_count"]))
+    table.add_row("数据库大小", f"{stats['size_bytes'] / 1024:.1f} KB")
+    table.add_row("最近备份", stats["last_backup_path"] or "尚未备份")
+    console.print(table)
+
+
+@cli.command()
+@click.option(
+    "--output-dir",
+    type=click.Path(path_type=Path),
+    help="备份输出目录，默认使用 data/backups。",
+)
+def backup(output_dir):
+    """创建包含交易和本地配置的完整数据库备份。"""
+    manager = PortfolioManager()
+    try:
+        backup_path = manager.create_backup(output_dir)
+    except LocalStoreError as exc:
+        raise click.ClickException(str(exc)) from exc
+    console.print(f"备份完成: {backup_path}", style="green")
+
+
+@cli.command(name="export-data")
+@click.option(
+    "--output",
+    type=click.Path(path_type=Path),
+    default=Path("data/export/portfolio.json"),
+    show_default=True,
+)
+def export_data(output):
+    """导出不含 API Key 的持仓和交易 JSON。"""
+    manager = PortfolioManager()
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(manager.export_data(), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    console.print(f"导出完成: {output}", style="green")
 
 @cli.command()
 @click.argument('fund_code')

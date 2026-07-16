@@ -1,7 +1,12 @@
 from streamlit.testing.v1 import AppTest
 
 
-def test_sidebar_groups_and_navigation_work():
+def test_sidebar_groups_and_navigation_work(tmp_path, monkeypatch):
+    monkeypatch.setenv("FUNDMASTER_DATABASE_PATH", str(tmp_path / "fundmaster.db"))
+    monkeypatch.setenv("FUNDMASTER_BACKUP_PATH", str(tmp_path / "backups"))
+    monkeypatch.setenv(
+        "FUNDMASTER_LEGACY_PORTFOLIO_PATH", str(tmp_path / "missing.json")
+    )
     app = AppTest.from_file("src/ui/app.py", default_timeout=30).run()
 
     assert not app.exception
@@ -52,3 +57,8 @@ def test_sidebar_groups_and_navigation_work():
     assert not app.exception
     assert app.session_state["active_page"] == "⚙️ 全局系统设置"
     assert any(button.label == "读取模型列表" for button in app.button)
+    assert any(button.label == "立即备份数据库" for button in app.button)
+    assert any(
+        button.label == "导出持仓 JSON"
+        for button in app.get("download_button")
+    )

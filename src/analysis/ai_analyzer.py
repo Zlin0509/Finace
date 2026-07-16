@@ -1,16 +1,22 @@
 import json
+from typing import Optional
+
 from src.data.fund_api import FundDataAPI
 from src.analysis.engine import AnalysisEngine
 from src.integrations.llm_gateway import LLMConfig, LLMGateway
 from src.portfolio.manager import PortfolioManager
 
 class AIFundAnalyzer:
-    def __init__(self):
-        self.gateway = LLMGateway(LLMConfig.from_env())
+    def __init__(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        portfolio_manager: Optional[PortfolioManager] = None,
+    ):
+        self.gateway = LLMGateway(llm_config or LLMConfig.from_env())
         self.config = self.gateway.config.to_dict()
         self.api = FundDataAPI()
         self.engine = AnalysisEngine()
-        self.pm = PortfolioManager()
+        self.pm = portfolio_manager or PortfolioManager()
         
     def update_config(self, config_dict: dict):
         """更新模型配置"""

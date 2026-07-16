@@ -1,79 +1,145 @@
-import json
+from __future__ import annotations
+
+import os
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+
 import pandas as pd
-from datetime import datetime
+
+from src.storage.local_store import LocalStore
+
 
 class PortfolioManager:
-    def __init__(self, data_path: str = "data/portfolio.json"):
-        self.data_path = Path(data_path)
-        self.portfolio = self._load()
-        
-    def _load(self) -> Dict:
-        """加载持仓数据"""
-        if not self.data_path.exists():
-            return {"holdings": {}, "transactions": []}
-            
-        with open(self.data_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-            
-    def _save(self):
-        """保存持仓数据"""
-        with open(self.data_path, "w", encoding="utf-8") as f:
-            json.dump(self.portfolio, f, indent=2, ensure_ascii=False)
-            
-    def add_transaction(self, date: str, fund_code: str, action: str, amount: float, price: float, fees: float = 0):
-        """添加交易记录并更新持仓
-        
-        Args:
-            action: 'buy' or 'sell'
-        """
-        # 记录交易
-        tx = {
-            "date": date,
-            "fund_code": fund_code,
-            "action": action,
-            "amount": amount, # 交易金额
-            "price": price,   # 净值
-            "shares": amount / price if action == "buy" else amount, # 买入算份额，卖出传份额
-            "fees": fees
+    """Rebuild portfolio holdings from durable transaction records."""
+
+    def __init__(
+        self,
+        data_path: Optional[str] = None,
+        legacy_data_path: Optional[str] = None,
+        store: Optional[LocalStore] = None,
+    ):
+        resolved_data_path = data_path or os.getenv(
+            "FUNDMASTER_DATABASE_PATH", "data/fundmaster.db"
+        )
+        resolved_backup_path = os.getenv("FUNDMASTER_BACKUP_PATH") or None
+        self.store = store or LocalStore(resolved_data_path, resolved_backup_path)
+        self.data_path = self.store.database_path
+        self.legacy_data_path = Path(
+            legacy_data_path
+            or os.getenv("FUNDMASTER_LEGACY_PORTFOLIO_PATH", "data/portfolio.json")
+        )
+        self.migrated_transaction_count = self.store.import_legacy_portfolio(
+            self.legacy_data_path
+        )
+
+    @property
+    def portfolio(self) -> Dict[str, Any]:
+        """Compatibility view for callers that previously read the JSON payload."""
+        holdings = self._rebuild_holdings()
+        return {
+            "holdings": holdings,
+            "transactions": self.get_transactions(),
         }
-        self.portfolio["transactions"].append(tx)
-        
-        # 更新持仓
-        shares = tx["shares"]
-        if fund_code not in self.portfolio["holdings"]:
-            if action == "buy":
-                self.portfolio["holdings"][fund_code] = {
+
+    def add_transaction(
+        self,
+        date: str,
+        fund_code: str,
+        action: str,
+        amount: float,
+        price: float,
+        fees: float = 0,
+    ) -> int:
+        """Persist a buy amount or sell share quantity and return its local ID."""
+        normalized_action = str(action).strip().lower()
+        normalized_code = str(fund_code).strip()
+        numeric_amount = float(amount)
+        numeric_price = float(price)
+        numeric_fees = float(fees)
+
+        if normalized_action == "sell":
+            current = self._rebuild_holdings().get(normalized_code, {})
+            available_shares = float(current.get("shares", 0))
+            if numeric_amount > available_shares + 1e-9:
+                raise ValueError(
+                    f"卖出份额超过当前持仓：可用 {available_shares:.4f} 份"
+                )
+
+        shares = (
+            numeric_amount / numeric_price
+            if normalized_action == "buy" and numeric_price > 0
+            else numeric_amount
+        )
+        return self.store.add_transaction(
+            {
+                "date": date,
+                "fund_code": normalized_code,
+                "action": normalized_action,
+                "amount": numeric_amount,
+                "price": numeric_price,
+                "shares": shares,
+                "fees": numeric_fees,
+            }
+        )
+
+    def get_transactions(self) -> List[Dict[str, Any]]:
+        return self.store.list_transactions()
+
+    def get_holdings(self) -> pd.DataFrame:
+        holdings = []
+        for code, data in self._rebuild_holdings().items():
+            shares = float(data["shares"])
+            cost = float(data["cost"])
+            if shares <= 0:
+                continue
+            holdings.append(
+                {
+                    "fund_code": code,
                     "shares": shares,
-                    "cost": amount + fees
+                    "cost": cost,
+                    "unit_cost": cost / shares,
                 }
-        else:
-            current = self.portfolio["holdings"][fund_code]
+            )
+        return pd.DataFrame(
+            holdings,
+            columns=["fund_code", "shares", "cost", "unit_cost"],
+        )
+
+    def export_data(self) -> Dict[str, Any]:
+        """Export portfolio data without persisted API credentials."""
+        return {
+            "format_version": 1,
+            "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "holdings": self._rebuild_holdings(),
+            "transactions": self.get_transactions(),
+        }
+
+    def create_backup(self, destination_dir: str | Path | None = None) -> Path:
+        return self.store.create_backup(destination_dir)
+
+    def _rebuild_holdings(self) -> Dict[str, Dict[str, float]]:
+        holdings: Dict[str, Dict[str, float]] = {}
+        for transaction in self.get_transactions():
+            code = transaction["fund_code"]
+            action = transaction["action"]
+            shares = float(transaction["shares"])
+            current = holdings.setdefault(code, {"shares": 0.0, "cost": 0.0})
+
             if action == "buy":
                 current["shares"] += shares
-                current["cost"] += (amount + fees)
-            elif action == "sell":
-                current["shares"] -= shares
-                # 简单处理：按比例减少成本
-                if current["shares"] > 0:
-                    reduce_ratio = shares / (current["shares"] + shares)
-                    current["cost"] *= (1 - reduce_ratio)
-                else:
-                    current["shares"] = 0
-                    current["cost"] = 0
-                    
-        self._save()
-        
-    def get_holdings(self) -> pd.DataFrame:
-        """获取当前持仓摘要"""
-        holdings = []
-        for code, data in self.portfolio["holdings"].items():
-            if data["shares"] > 0:
-                holdings.append({
-                    "fund_code": code,
-                    "shares": data["shares"],
-                    "cost": data["cost"],
-                    "unit_cost": data["cost"] / data["shares"] if data["shares"] > 0 else 0
-                })
-        return pd.DataFrame(holdings)
+                current["cost"] += float(transaction["amount"]) + float(
+                    transaction["fees"]
+                )
+                continue
+
+            previous_shares = current["shares"]
+            if previous_shares <= 0:
+                continue
+            sold_shares = min(shares, previous_shares)
+            current["cost"] *= 1 - sold_shares / previous_shares
+            current["shares"] = previous_shares - sold_shares
+            if current["shares"] <= 1e-9:
+                current["shares"] = 0.0
+                current["cost"] = 0.0
+        return holdings

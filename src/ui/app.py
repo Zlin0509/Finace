@@ -1,3 +1,6 @@
+import json
+import os
+
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -18,8 +21,9 @@ from src.backtest.engine import BacktestEngine
 from src.strategy.optimizer import PortfolioOptimizer
 from src.strategy.walk_forward import WalkForwardOptimizer
 from src.analysis.ai_analyzer import AIFundAnalyzer
-from src.integrations.llm_gateway import PROVIDER_LABELS
+from src.integrations.llm_gateway import LLMConfig, PROVIDER_LABELS
 from src.news.service import NewsService
+from src.storage.local_store import LocalStore, LocalStoreError
 from src.utils.config import config
 
 # ==========================================
@@ -318,7 +322,7 @@ st.markdown("""
 # ==========================================
 # 初始化与缓存
 # ==========================================
-COMPONENTS_VERSION = "2026-07-15.4"
+COMPONENTS_VERSION = "2026-07-16.1"
 
 
 @st.cache_resource
@@ -326,21 +330,89 @@ def get_components(version: str):
     data_config = config.get("dataSources", {})
     analysis_config = config.get("analysis", {})
     news_config = config.get("news", {})
+    storage_config = config.get("storage", {})
+    portfolio_config = config.get("portfolio", {})
+
+    store = LocalStore(
+        database_path=os.getenv(
+            "FUNDMASTER_DATABASE_PATH",
+            storage_config.get("databasePath", "data/fundmaster.db"),
+        ),
+        backup_dir=os.getenv(
+            "FUNDMASTER_BACKUP_PATH",
+            storage_config.get("backupPath", "data/backups"),
+        ),
+    )
+    portfolio_manager = PortfolioManager(
+        store=store,
+        legacy_data_path=os.getenv(
+            "FUNDMASTER_LEGACY_PORTFOLIO_PATH",
+            storage_config.get(
+                "legacyPortfolioPath",
+                portfolio_config.get("legacyDataPath", "data/portfolio.json"),
+            ),
+        ),
+    )
+
+    persisted_fund_data = {
+        "data_source": "天天基金/东方财富 (默认)",
+        "cache_hours": int(data_config.get("cacheTtlHours", 24)),
+        "timeout_sec": 10,
+    }
+    persisted_fund_data.update(store.load_settings("fund_data"))
+
+    llm_values = LLMConfig.from_env().to_dict()
+    llm_values.update(store.load_settings("llm"))
+    ai_analyzer = AIFundAnalyzer(
+        LLMConfig.from_dict(llm_values),
+        portfolio_manager=portfolio_manager,
+    )
+
+    stock_defaults = data_config.get("stockMarket", {})
+    stock_api = AStockDataAPI(
+        base_url=stock_defaults.get("baseUrl", "https://fuyao.aicubes.cn"),
+        timeout_seconds=float(stock_defaults.get("timeoutSeconds", 10)),
+    )
+    stock_values = {
+        "api_key": stock_api.api_key,
+        "base_url": stock_api.base_url,
+        "timeout_sec": int(stock_api.timeout_seconds),
+    }
+    stock_values.update(store.load_settings("stock_data"))
+    stock_api.update_config(
+        stock_values.get("api_key", ""),
+        stock_values.get("base_url", "https://fuyao.aicubes.cn"),
+        stock_values.get("timeout_sec", 10),
+    )
+
     backtest_engine = BacktestEngine(
         trading_days=int(analysis_config.get("tradingDaysPerYear", 244)),
         risk_free_rate=float(analysis_config.get("riskFreeRate", 0.02)),
     )
+    store.backup_if_due(
+        float(
+            os.getenv(
+                "FUNDMASTER_AUTO_BACKUP_HOURS",
+                storage_config.get("autoBackupHours", 24),
+            )
+        )
+    )
     return {
         "api": FundDataAPI(
             cache_dir=data_config.get("cachePath", "data/cache"),
-            cache_ttl_hours=int(data_config.get("cacheTtlHours", 24)),
+            cache_ttl_hours=int(persisted_fund_data["cache_hours"]),
         ),
-        "pm": PortfolioManager(),
+        "store": store,
+        "pm": portfolio_manager,
+        "migration_count": portfolio_manager.migrated_transaction_count,
+        "fund_data_config": persisted_fund_data,
+        "stock_data_config": stock_values,
+        "stock_api": stock_api,
         "analyzer": AnalysisEngine(),
         "backtest": backtest_engine,
         "walk_forward": WalkForwardOptimizer(backtest_engine),
         "optimizer": PortfolioOptimizer(),
-        "ai": AIFundAnalyzer(),
+        "ai": ai_analyzer,
         "news": NewsService(
             cache_dir=news_config.get("cachePath", "data/cache/news"),
             cache_ttl_minutes=int(news_config.get("cacheTtlMinutes", 30)),
@@ -350,13 +422,11 @@ def get_components(version: str):
 comps = get_components(COMPONENTS_VERSION)
 api = comps["api"]
 pm = comps["pm"]
-if "stock_api_client" not in st.session_state:
-    stock_defaults = config.get("dataSources", {}).get("stockMarket", {})
-    st.session_state.stock_api_client = AStockDataAPI(
-        base_url=stock_defaults.get("baseUrl", "https://fuyao.aicubes.cn"),
-        timeout_seconds=float(stock_defaults.get("timeoutSeconds", 10)),
-    )
-stock_api = st.session_state.stock_api_client
+local_store = comps["store"]
+stock_api = comps["stock_api"]
+if comps["migration_count"] and not st.session_state.get("migration_notice_shown"):
+    st.toast(f"已将 {comps['migration_count']} 条旧交易迁移到本地数据库")
+    st.session_state.migration_notice_shown = True
 
 # ==========================================
 # 侧边栏导航
@@ -438,16 +508,19 @@ with st.sidebar:
                 if not trade_code.strip():
                     st.error("请输入基金代码")
                 else:
-                    pm.add_transaction(
-                        trade_date.strftime("%Y-%m-%d"),
-                        trade_code.strip(),
-                        trade_action,
-                        trade_amount,
-                        trade_price,
-                        trade_fee,
-                    )
-                    st.success("交易已保存")
-                    st.rerun()
+                    try:
+                        pm.add_transaction(
+                            trade_date.strftime("%Y-%m-%d"),
+                            trade_code.strip(),
+                            trade_action,
+                            trade_amount,
+                            trade_price,
+                            trade_fee,
+                        )
+                        st.success("交易已保存到本机数据库")
+                        st.rerun()
+                    except (ValueError, LocalStoreError) as exc:
+                        st.error(str(exc))
 
 # ==========================================
 # 页面路由逻辑
@@ -1721,26 +1794,23 @@ elif page == "⚙️ 全局系统设置":
         st.session_state.llm_config = dict(comps["ai"].config)
         
     if "data_config" not in st.session_state:
-        st.session_state.data_config = {
-            "data_source": "天天基金/东方财富 (默认)",
-            "cache_hours": 24,
-            "timeout_sec": 10
-        }
+        st.session_state.data_config = dict(comps["fund_data_config"])
 
     if "stock_data_config" not in st.session_state:
-        st.session_state.stock_data_config = {
-            "api_key": stock_api.api_key,
-            "base_url": stock_api.base_url,
-            "timeout_sec": int(stock_api.timeout_seconds),
-        }
+        st.session_state.stock_data_config = dict(comps["stock_data_config"])
         
     llm_conf = st.session_state.llm_config
     data_conf = st.session_state.data_config
     stock_conf = st.session_state.stock_data_config
     
     # ------------------ 设置面板 ------------------
-    tab1, tab2, tab3 = st.tabs(
-        ["🤖 AI 模型接口设置", "📡 基金数据源设置", "📈 A股行情接口"]
+    tab1, tab2, tab3, tab4 = st.tabs(
+        [
+            "🤖 AI 模型接口设置",
+            "📡 基金数据源设置",
+            "📈 A股行情接口",
+            "💾 本地数据与备份",
+        ]
     )
     
     with tab1:
@@ -1812,7 +1882,11 @@ elif page == "⚙️ 全局系统设置":
             comps["ai"].update_config(new_llm_config)
 
             if save_llm:
-                st.success("模型配置已在当前会话生效。")
+                try:
+                    local_store.save_settings("llm", new_llm_config)
+                    st.success("模型配置已保存到本机，重启后会自动恢复。")
+                except LocalStoreError as exc:
+                    st.error(str(exc))
             if test_llm:
                 try:
                     with st.spinner("正在测试接口..."):
@@ -1870,19 +1944,25 @@ elif page == "⚙️ 全局系统设置":
                                             
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("💾 保存数据源配置", type="primary", key="save_data"):
-                st.session_state.data_config = {
+                new_data_config = {
                     "data_source": data_source,
                     "cache_hours": cache_hours,
                     "timeout_sec": timeout_sec
                 }
-                st.success("✅ 数据源配置已更新！（缓存时间将在下次拉取时生效）")
+                st.session_state.data_config = new_data_config
+                try:
+                    local_store.save_settings("fund_data", new_data_config)
+                    api.cache_ttl_hours = int(cache_hours)
+                    st.success("数据源配置已保存到本机并立即生效。")
+                except LocalStoreError as exc:
+                    st.error(str(exc))
                 
         st.markdown("---")
         st.warning("🚨 **防封禁提示**：本项目使用的 AKShare 数据属于公开网页爬取。请勿将缓存时间设置过低（建议大于 12 小时），否则可能导致您的机器 IP 被天天基金或东方财富的防火墙临时封禁。")
 
     with tab3:
         st.subheader("同花顺 Financial-API")
-        st.caption("API Key 仅在当前 Streamlit 会话和进程内使用，不写入项目文件。")
+        st.caption("配置保存在本机私有数据库中，不写入项目文件或 Git。")
 
         with st.form("stock_data_settings_form"):
             stock_api_key = st.text_input(
@@ -1927,7 +2007,11 @@ elif page == "⚙️ 全局系统设置":
                 new_stock_conf["timeout_sec"],
             )
             if save_stock_data:
-                st.success("A 股行情配置已在当前会话生效。")
+                try:
+                    local_store.save_settings("stock_data", new_stock_conf)
+                    st.success("A 股行情配置已保存到本机，重启后会自动恢复。")
+                except LocalStoreError as exc:
+                    st.error(str(exc))
             if test_stock_data:
                 try:
                     with st.spinner("正在读取 000001.SZ 行情快照..."):
@@ -1954,3 +2038,55 @@ elif page == "⚙️ 全局系统设置":
             columns=["变量", "用途"],
         )
         st.dataframe(stock_env_table, hide_index=True, width="stretch")
+
+    with tab4:
+        st.subheader("本地数据与备份")
+        st.caption("交易、接口配置和存储元数据统一保存在 SQLite 数据库中。")
+
+        storage_stats = local_store.describe()
+        storage1, storage2, storage3, storage4 = st.columns(4)
+        storage1.metric("交易记录", f"{storage_stats['transaction_count']} 条")
+        storage2.metric("已保存配置", f"{storage_stats['setting_count']} 项")
+        storage3.metric("数据库版本", f"v{storage_stats['schema_version']}")
+        storage4.metric(
+            "数据库大小", f"{storage_stats['size_bytes'] / 1024:.1f} KB"
+        )
+
+        st.text_input(
+            "本地数据库路径",
+            value=storage_stats["database_path"],
+            disabled=True,
+        )
+
+        backup_col, export_col = st.columns(2)
+        with backup_col:
+            if st.button("立即备份数据库", type="primary", width="stretch"):
+                try:
+                    backup_path = local_store.create_backup()
+                    st.success(f"备份完成：{backup_path}")
+                except Exception as exc:
+                    st.error(f"备份失败：{exc}")
+        with export_col:
+            export_payload = json.dumps(
+                pm.export_data(), ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            st.download_button(
+                "导出持仓 JSON",
+                data=export_payload,
+                file_name=f"fundmaster-portfolio-{datetime.now():%Y%m%d}.json",
+                mime="application/json",
+                width="stretch",
+            )
+
+        if storage_stats["last_backup_at"]:
+            st.caption(
+                f"最近备份：{storage_stats['last_backup_at']} · "
+                f"{storage_stats['last_backup_path']}"
+            )
+        if local_store.get_metadata("legacy_portfolio_migrated_at"):
+            st.info("旧版 portfolio.json 已迁移并保留原文件备份。")
+        st.warning(
+            "数据库内容未额外加密。完整备份包含本机保存的 API Key，"
+            "请像保管 .env 文件一样保管；"
+            "“导出持仓 JSON”不包含任何接口凭据。"
+        )

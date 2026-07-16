@@ -1,7 +1,8 @@
 [project]
 name = "fund-analyzer"
-version = "0.1.0"
+version = "0.2.0"
 description = "基金智能分析助手 - 持仓分析/回测/策略优化"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "akshare>=1.14.0",
@@ -34,3 +35,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["src*"]
+
+[tool.setuptools.package-data]
+"src.resources" = ["*.yaml"]

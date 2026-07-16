@@ -19,6 +19,8 @@ htmlcov/
 .codegraph/
 .playwright-mcp/
 walk-forward-results.png
+build/
+dist/
 
 # Local configuration and secrets
 .env
@@ -29,6 +31,9 @@ walk-forward-results.png
 # Runtime data containing personal portfolio information
 data/cache/
 data/portfolio.json
+data/*.db
+data/*.db-*
+data/backups/
 data/export/
 
 # Editors and operating systems

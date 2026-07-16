@@ -1,0 +1,56 @@
+# FundMaster Pro packaged defaults
+
+dataSources:
+  primary: "akshare"
+  cacheEnabled: true
+  cacheTtlHours: 6
+  cachePath: "data/cache"
+  stockMarket:
+    provider: "hithink"
+    baseUrl: "https://fuyao.aicubes.cn"
+    timeoutSeconds: 10
+
+portfolio:
+  dataPath: "data/fundmaster.db"
+  legacyDataPath: "data/portfolio.json"
+  currency: "CNY"
+  benchmarkIndex: "000300"
+
+storage:
+  databasePath: "data/fundmaster.db"
+  legacyPortfolioPath: "data/portfolio.json"
+  backupPath: "data/backups"
+  autoBackupHours: 24
+
+analysis:
+  riskFreeRate: 0.02
+  tradingDaysPerYear: 244
+  lookbackDays: 365
+  maxDrawdownWindow: 252
+
+backtest:
+  defaultStartDate: "2020-01-01"
+  transactionCostRate: 0.0015
+  redeemCostRate: 0.005
+  minHoldDays: 7
+
+news:
+  cacheTtlMinutes: 30
+  cachePath: "data/cache/news"
+
+strategy:
+  dca:
+    defaultAmount: 1000
+    frequency: "monthly"
+  grid:
+    gridCount: 10
+    upperBound: 1.2
+    lowerBound: 0.8
+  rebalance:
+    threshold: 0.05
+    frequency: "quarterly"
+
+output:
+  reportPath: "data/export"
+  format: "console"
+  chartStyle: "seaborn-v0_8-whitegrid"

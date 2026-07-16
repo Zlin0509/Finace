@@ -13,9 +13,17 @@ dataSources:
 
 # 持仓配置
 portfolio:
-  dataPath: "data/portfolio.json"
+  dataPath: "data/fundmaster.db"
+  legacyDataPath: "data/portfolio.json"
   currency: "CNY"
   benchmarkIndex: "000300"     # 默认基准：沪深300
+
+# 本地持久化
+storage:
+  databasePath: "data/fundmaster.db"
+  legacyPortfolioPath: "data/portfolio.json"
+  backupPath: "data/backups"
+  autoBackupHours: 24
 
 # 分析配置
 analysis:
