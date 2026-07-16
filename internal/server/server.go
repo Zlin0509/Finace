@@ -17,7 +17,7 @@ import (
 	"github.com/Zlin0509/Finace/internal/storage"
 )
 
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 //go:embed static/*
 var staticFiles embed.FS
