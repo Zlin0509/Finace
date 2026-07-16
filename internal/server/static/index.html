@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>FundMaster Pro · Go</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body class="home-mode">
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">FM</span>
+        <span><strong>FundMaster Pro</strong><small>Go native workbench</small></span>
+      </div>
+      <div class="runtime"><i></i><span>Go Core</span><code id="runtime-version">v0.3.0</code></div>
+      <nav aria-label="主导航">
+        <span class="nav-group">开始</span>
+        <button class="nav-item active" data-view="home" aria-current="page"><b>◇</b>欢迎首页</button>
+        <span class="nav-group">资产</span>
+        <button class="nav-item" data-view="overview"><b>⌂</b>资产总览</button>
+        <span class="nav-group">研究</span>
+        <button class="nav-item" data-view="quant"><b>⌁</b>量化实验室</button>
+        <span class="nav-group">系统</span>
+        <button class="nav-item" data-view="settings"><b>⚙</b>本地数据与接口</button>
+      </nav>
+      <button class="trade-trigger" id="open-trade"><span>＋</span>新增交易</button>
+    </aside>
+
+    <main>
+      <header class="topbar" aria-hidden="true">
+        <div><span class="eyebrow" id="page-eyebrow">PORTFOLIO</span><h1 id="page-title">资产总览</h1></div>
+        <div class="top-actions"><span id="clock"></span><button class="icon-button" id="refresh" title="刷新数据" aria-label="刷新数据">↻</button></div>
+      </header>
+
+      <section class="view active welcome" id="view-home">
+        <div class="welcome-veil" aria-hidden="true"></div>
+        <div class="welcome-content">
+          <span class="welcome-kicker">LOCAL FINANCE SYSTEM · GO NATIVE</span>
+          <h1>FundMaster Pro</h1>
+          <p>让每一次交易，都成为可以验证的长期决策。</p>
+          <div class="welcome-actions">
+            <button class="welcome-primary" id="enter-workbench">进入资产工作台 <span>→</span></button>
+            <button class="welcome-secondary" id="enter-quant">打开量化实验室</button>
+          </div>
+        </div>
+        <div class="welcome-status" aria-label="本地资产摘要">
+          <div><span>本地资产成本</span><strong id="welcome-cost">¥0.00</strong></div>
+          <div><span>有效持仓</span><strong id="welcome-holdings">0</strong></div>
+          <div><span>运行核心</span><strong>Go 0.3</strong></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-overview">
+        <div class="metric-strip overview-metrics">
+          <div class="metric"><span>累计成本</span><strong id="total-cost">¥0.00</strong><small>交易流水重建</small></div>
+          <div class="metric"><span>持仓数量</span><strong id="holding-count">0</strong><small>当前有效标的</small></div>
+          <div class="metric"><span>交易记录</span><strong id="transaction-count">0</strong><small>SQLite 持久化</small></div>
+          <div class="metric runtime-metric"><span>运行时</span><strong>Go</strong><small>单二进制服务</small></div>
+        </div>
+        <div class="overview-grid">
+          <section class="panel allocation-panel">
+            <div class="section-heading"><div><span>ALLOCATION</span><h2>成本分布</h2></div><output id="allocation-total">¥0</output></div>
+            <canvas id="allocation-chart" width="440" height="300" aria-label="持仓成本分布图"></canvas>
+          </section>
+          <section class="panel activity-panel">
+            <div class="section-heading"><div><span>LEDGER</span><h2>最近交易</h2></div><button class="text-button" id="open-trade-inline">录入</button></div>
+            <div class="table-wrap compact"><table><thead><tr><th>日期</th><th>代码</th><th>方向</th><th class="num">金额/份额</th></tr></thead><tbody id="recent-transactions"></tbody></table></div>
+          </section>
+        </div>
+        <section class="holdings-section">
+          <div class="section-heading"><div><span>POSITIONS</span><h2>当前持仓</h2></div><span class="muted" id="portfolio-updated">本地数据</span></div>
+          <div class="table-wrap"><table><thead><tr><th>基金代码</th><th class="num">持有份额</th><th class="num">持仓成本</th><th class="num">单位成本</th><th>状态</th></tr></thead><tbody id="holdings-body"></tbody></table></div>
+        </section>
+      </section>
+
+      <section class="view" id="view-quant">
+        <div class="mode-tabs" role="tablist"><button class="active" data-mode="backtest" role="tab" aria-selected="true">策略回测</button><button data-mode="optimize" role="tab" aria-selected="false">Walk-Forward</button></div>
+        <form id="quant-form" class="work-form">
+          <div class="field"><label>基金代码</label><input name="fund_code" value="510300" pattern="\d{6}" aria-label="基金代码" required></div>
+          <div class="field"><label>开始日期</label><input name="start" type="date" value="2020-01-01" aria-label="开始日期" required></div>
+          <div class="field"><label>结束日期</label><input name="end" type="date" aria-label="结束日期" required></div>
+          <div class="field"><label>策略</label><select name="strategy" aria-label="策略"><option value="ma_cross">双均线趋势</option><option value="momentum">动量轮动</option><option value="buy_hold">买入持有</option></select></div>
+          <div class="field"><label>初始资金</label><input name="initial_capital" type="number" value="100000" min="1000"></div>
+          <div class="field"><label>手续费 (%)</label><input name="commission" type="number" value="0.15" min="0" step="0.01"></div>
+          <div class="field"><label>滑点 (%)</label><input name="slippage" type="number" value="0.05" min="0" step="0.01"></div>
+          <div class="field strategy-ma"><label>短 / 长均线</label><div class="paired"><input name="short_window" type="number" value="20" min="2" aria-label="短均线"><input name="long_window" type="number" value="60" min="3" aria-label="长均线"></div></div>
+          <div class="field strategy-momentum hidden"><label>动量周期 / 阈值 (%)</label><div class="paired"><input name="momentum_window" type="number" value="60" min="2" aria-label="动量周期"><input name="momentum_threshold" type="number" value="0" step="0.5" aria-label="动量阈值"></div></div>
+          <div class="field optimizer-only hidden"><label>训练 / 验证窗口</label><div class="paired"><input name="train_days" type="number" value="488" min="40" aria-label="训练窗口"><input name="test_days" type="number" value="122" min="20" aria-label="验证窗口"></div></div>
+          <div class="field optimizer-only hidden"><label>目标 / 深度</label><div class="paired"><select name="objective"><option value="balanced">稳健均衡</option><option value="sharpe">夏普优先</option><option value="return">收益优先</option></select><select name="search_depth"><option value="fast">快速</option><option value="standard" selected>标准</option><option value="deep">深入</option></select></div></div>
+          <button class="primary-action" type="submit" id="run-quant">运行策略回测</button>
+        </form>
+        <div id="quant-status" class="status-line hidden"></div>
+        <div id="quant-results" class="hidden">
+          <div class="metric-strip result-strip" id="quant-metrics"></div>
+          <div class="diagnostic-bar hidden" id="quant-diagnostics">
+            <div class="diagnostic-verdict"><span>ROBUSTNESS</span><strong id="diagnostic-verdict"></strong></div>
+            <div><span>参数稳定性</span><strong id="diagnostic-stability">--</strong></div>
+            <div><span>正收益窗口</span><strong id="diagnostic-positive">--</strong></div>
+            <div><span>跑赢基准</span><strong id="diagnostic-outperform">--</strong></div>
+            <div><span>过拟合差距</span><strong id="diagnostic-gap">--</strong></div>
+          </div>
+          <section class="chart-section"><div class="section-heading"><div><span>OUT-OF-SAMPLE / EQUITY</span><h2 id="chart-title">策略权益与基准</h2></div><span class="muted" id="quant-meta"></span></div><canvas id="equity-chart" width="1000" height="420"></canvas></section>
+          <section class="fold-section hidden" id="fold-section"><div class="section-heading"><div><span>VALIDATION</span><h2>窗口验证</h2></div></div><div class="table-wrap"><table><thead><tr><th>窗口</th><th>验证区间</th><th>参数</th><th class="num">策略收益</th><th class="num">基准收益</th><th class="num">夏普</th></tr></thead><tbody id="fold-body"></tbody></table></div></section>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="settings-grid">
+          <section class="settings-section">
+            <div class="section-heading"><div><span>LOCAL FIRST</span><h2>SQLite 本地存储</h2></div><span class="secure-badge">0600</span></div>
+            <div class="storage-stats" id="storage-stats"></div>
+            <label class="path-field">数据库路径<input id="database-path" disabled></label>
+            <div class="button-row"><button class="primary-action compact-action" id="backup-db">立即备份</button><a class="secondary-action" href="/api/storage/export">导出持仓 JSON</a></div>
+            <p class="notice">完整数据库包含本地接口凭据且未额外加密；持仓 JSON 导出不包含 API Key。</p>
+          </section>
+          <section class="settings-section">
+            <div class="section-heading"><div><span>MODEL GATEWAY</span><h2>第三方模型接口</h2></div></div>
+            <form id="llm-form" class="settings-form">
+              <label>协议<select name="provider"><option value="codex_responses">Codex / Responses</option><option value="openai_chat">OpenAI Chat</option><option value="claude_messages">Anthropic Messages</option></select></label>
+              <label>API Base URL<input name="base_url" placeholder="https://gateway.example/v1"></label>
+              <label>Model ID<input name="model" placeholder="model-id"></label>
+              <label>API Key<input name="api_key" type="password" placeholder="留空保留已保存值"></label>
+              <div class="paired"><label>超时 (秒)<input name="timeout_seconds" type="number" value="120"></label><label>最大 Tokens<input name="max_tokens" type="number" value="900"></label></div>
+              <button class="primary-action compact-action" type="submit">保存到本机</button>
+            </form>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="trade-dialog">
+    <form method="dialog" class="dialog-head"><div><span>LOCAL LEDGER</span><h2>新增交易</h2></div><button value="cancel" aria-label="关闭">×</button></form>
+    <form id="trade-form" class="trade-form">
+      <label>基金代码<input name="fund_code" placeholder="510300" pattern="\d{6}" required></label>
+      <label>交易方向<select name="action"><option value="buy">买入</option><option value="sell">卖出</option></select></label>
+      <label>成交净值<input name="price" type="number" min="0.0001" step="0.0001" required></label>
+      <label>金额 / 份额<input name="amount" type="number" min="0.01" step="0.01" required></label>
+      <label>手续费<input name="fees" type="number" min="0" step="0.01" value="0"></label>
+      <label>交易日期<input name="date" type="date" required></label>
+      <button class="primary-action" type="submit">保存交易</button>
+    </form>
+  </dialog>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

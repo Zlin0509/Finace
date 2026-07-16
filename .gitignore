@@ -22,6 +22,12 @@ walk-forward-results.png
 build/
 dist/
 
+# Go build and profiling artifacts
+/fundmaster
+*.test
+*.prof
+coverage.out
+
 # Local configuration and secrets
 .env
 .env.*

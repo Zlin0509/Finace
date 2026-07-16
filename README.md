@@ -1,100 +1,144 @@
 # FundMaster Pro
 
-基金持仓、量化回测、新闻检索和第三方模型分析工具。提供 Streamlit 界面和 `fund` CLI。当前版本：`0.2.0`。
+本地优先的基金持仓与量化研究工作台。`0.3.0` 起默认运行时为 Go，前端、API 与静态资源打包进一个 macOS ARM64 二进制，不需要 Python 或 Streamlit。
 
-## 功能
+![Go 欢迎首页](docs/images/07-go-welcome.png)
 
-- 持仓记账、净值分析和风险指标
-- 同花顺官方 A 股行情快照、历史日 K 与基金披露持仓贡献分析
-- 买入持有、双均线、动量轮动及定投回测
-- Walk-Forward 参数自优化、样本外验证、稳定性与过拟合诊断
-- 手续费、滑点、基准权益、回撤和逐笔交易记录
-- 基金/个股新闻与全球财经快讯检索，支持本地缓存降级
-- Codex / OpenAI Responses、CC / Anthropic Messages、OpenAI Chat 兼容接口
-- 自定义第三方 API Base URL、Model ID、API Key 和超时
-- SQLite 本地持久化、旧 JSON 自动迁移、每日备份和无密钥数据导出
+## 当前能力
 
-完整界面说明、标注截图和推荐分析流程见 [产品解析与操作指南](docs/PRODUCT_GUIDE.md)。
+- 交易流水记账，持仓与成本从 SQLite 流水实时重建
+- 旧 `data/portfolio.json` 自动迁移、每日备份和无密钥 JSON 导出
+- 东方财富基金历史净值读取与 6 小时进程内缓存
+- 买入持有、双均线和动量策略回测
+- 手续费、滑点、信号延迟、最终平仓、基准权益和回撤
+- Walk-Forward 参数搜索、串联样本外权益、参数稳定性和过拟合评级
+- 第三方模型网关配置的本地保存与 API Key 脱敏读取
+- 桌面侧边栏、移动底栏和二次元欢迎首页
 
-## 启动
+完整界面说明见 [产品解析与操作指南](docs/PRODUCT_GUIDE.md)。
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-streamlit run src/ui/app.py
-# 安装后也可以直接运行：fund ui
-```
+## 快速启动
 
-命令行入口：
+环境要求：macOS ARM64、Go `1.23+`、Xcode Command Line Tools。SQLite 驱动使用 CGO。
 
 ```bash
-fund --help
-fund stock 600519.SH --days 365 --adjust forward
-fund quant 510300 --start 2020-01-01 --end 2026-01-01 --strategy ma_cross
-fund auto-optimize 510300 --start 2018-01-01 --end 2026-01-01 --strategy ma_cross
-fund news 510300 --scope keyword --limit 10
-fund storage-info
-fund backup
-fund export-data --output data/export/portfolio.json
+mkdir -p dist
+GOCACHE=/tmp/fundmaster-go-cache CGO_ENABLED=1 go build \
+  -trimpath -ldflags="-s -w" \
+  -o dist/fundmaster-go-darwin-arm64 ./cmd/fundmaster
+
+./dist/fundmaster-go-darwin-arm64 serve
 ```
 
-## A 股行情接口
-
-在同花顺金融数据服务后台创建 API Key，然后通过“全局系统设置 > A股行情接口”保存到本机。也可以设置环境变量：
+默认地址：[http://127.0.0.1:8503/](http://127.0.0.1:8503/)。本仓库当前验收服务使用 `8504`，可通过参数覆盖：
 
 ```bash
-export HITHINK_FINANCE_API_KEY="your-api-key"
+./dist/fundmaster-go-darwin-arm64 serve -addr 127.0.0.1:8504
 ```
 
-行情数据来自同花顺 Financial-API，当前接入最新行情快照和前复权/不复权/后复权历史日 K。基金持仓贡献基于基金公开披露的季度持仓，仅表示已披露 A 股对当日涨跌的估算贡献，不代表实时完整仓位或最终基金净值。
+其他命令：
 
-## 第三方模型接口
+```bash
+./dist/fundmaster-go-darwin-arm64 version
+./dist/fundmaster-go-darwin-arm64 backup
+./dist/fundmaster-go-darwin-arm64 backup -db data/fundmaster.db -backups data/backups
+```
 
-可以在“全局系统设置”页面中配置并测试连接。点击保存后，配置写入本机私有数据库，不会写入仓库。
+## 架构
 
-也可以复制 [.env.example](.env.example) 中的变量到本机环境。Codex 接口使用 OpenAI Responses 协议；CC 接口使用 Claude Code 底层对应的 Anthropic Messages 协议。第三方网关必须兼容所选协议，OpenAI 兼容地址通常需要包含 `/v1`。
+```text
+Browser UI (embedded HTML/CSS/JS)
+        |
+Go HTTP server and JSON API
+        |
+Portfolio service  |  Quant engine  |  Market client
+        |                  |                  |
+SQLite ledger      Backtest/Walk-Forward   EastMoney NAV
+```
 
-第一次运行时环境变量作为默认值；在 UI 中显式保存后，本地配置优先：
+主要目录：
 
-| 协议 | API Key | Base URL | Model |
-| --- | --- | --- | --- |
-| Codex / Responses | `CODEX_API_KEY` | `CODEX_BASE_URL` | `CODEX_MODEL` |
-| CC / Messages | `CC_API_KEY` | `CC_BASE_URL` | `CC_MODEL` |
-| OpenAI Chat | `OPENAI_API_KEY` | `OPENAI_BASE_URL` | `OPENAI_MODEL` |
+| 路径 | 职责 |
+| --- | --- |
+| `cmd/fundmaster` | `serve`、`backup`、`version` 命令 |
+| `internal/server` | HTTP API、中间件和嵌入式前端 |
+| `internal/storage` | SQLite、WAL、权限、迁移和备份 |
+| `internal/portfolio` | 从交易流水重建持仓 |
+| `internal/market` | 基金净值下载、解析和缓存 |
+| `internal/quant` | 回测、指标和 Walk-Forward |
 
-## 本地数据与备份
+## 数据保存
 
-- 默认数据库：`data/fundmaster.db`，包含交易流水、接口配置和存储元数据。
-- 旧版 `data/portfolio.json` 会在首次启动时自动迁移，迁移前复制到 `data/backups/`，原文件不删除。
-- 应用启动时默认每 24 小时创建一次完整 SQLite 备份，也可以在“全局系统设置 > 本地数据与备份”或 `fund backup` 手动执行。
-- “导出持仓 JSON”和 `fund export-data` 只导出交易与持仓，不包含 API Key。
-- 数据库及备份在 macOS/Linux 上使用 `0600` 文件权限，但内容未额外加密；完整备份应按密钥文件保管。
+- 默认数据库：`data/fundmaster.db`
+- 默认备份目录：`data/backups/`
+- 默认旧数据：`data/portfolio.json`
+- 数据库、WAL 与备份在 POSIX 系统上限制为 `0600`
+- 完整数据库包含本地接口凭据且未额外加密
+- `/api/storage/export` 只导出交易与持仓，不包含 API Key
 
-路径可通过环境变量覆盖：
+路径可通过参数或环境变量覆盖：
 
 ```bash
 export FUNDMASTER_DATABASE_PATH="$HOME/.fundmaster/fundmaster.db"
 export FUNDMASTER_BACKUP_PATH="$HOME/.fundmaster/backups"
 export FUNDMASTER_LEGACY_PORTFOLIO_PATH="data/portfolio.json"
-export FUNDMASTER_AUTO_BACKUP_HOURS=24
+export FUNDMASTER_ADDR="127.0.0.1:8504"
 ```
 
-恢复时先停止应用，再用备份数据库替换 `FUNDMASTER_DATABASE_PATH` 指向的文件；建议替换前保留当前数据库副本。
+不要提交 `data/` 下的数据库、备份或本机 API Key。本仓库的 `.gitignore` 已排除这些路径。
 
-## 回测约定
+## 量化口径
 
-- 双均线和动量信号在收盘后生成，延迟到下一交易日生效，避免前视偏差。
-- 当前执行模型为全仓基金或空仓，不支持做空。
-- 每次仓位变化计入手续费和滑点，回测结束时强制平仓。
-- 自优化只在滚动训练窗口中选择参数，并在紧随其后的未见数据上验证。
-- 自优化主结果为所有样本外窗口串联后的权益，不以训练期最优收益作为结论。
-- 结果只反映历史净值和设定规则，不构成投资建议。
+- 双均线和动量信号在收盘后生成，下一交易日生效，避免前视偏差。
+- 当前执行模型为全仓基金或空仓，不做空。
+- 每次仓位变化计入手续费和滑点，结束时强制平仓。
+- Walk-Forward 每折只使用滚动训练窗口选参，随后在未见数据上验证。
+- 主结果将所有样本外日收益按时间串联，统一计算收益、基准、回撤、波动和夏普。
+- 可靠性评级综合参数稳定性、正收益窗口、跑赢基准比例和训练验证差距。
+- 历史结果不构成投资建议。
+
+## 性能
+
+Apple M3 Pro、Go `1.26.2`、约 10 年 2,440 个价格点：
+
+| 路径 | 基准 |
+| --- | ---: |
+| 完整回测与权益曲线 | `55.8 us/op` |
+| 仅计算指标 | `33.2 us/op` |
+| 快速 Walk-Forward | `0.354 ms/op` |
+
+真实 510300 数据验收中，首次回测请求包含行情网络读取约 `409 ms`，同进程缓存后的标准 Walk-Forward 约 `140 ms`。网络时延与数据源状态会影响端到端结果。
 
 ## 测试
 
 ```bash
-pytest -q
+GOCACHE=/tmp/fundmaster-go-cache go test ./...
+GOCACHE=/tmp/fundmaster-go-cache go vet ./...
+node --check internal/server/static/app.js
 ```
 
-测试覆盖本地持久化与迁移、量化策略、交易成本、新闻缓存降级以及第三方模型协议适配。
+运行量化基准：
+
+```bash
+GOCACHE=/tmp/fundmaster-go-cache go test ./internal/quant \
+  -run '^$' -bench 'Benchmark(BacktestTenYears|MetricsTenYears|WalkForwardFast)$' \
+  -benchmem -benchtime=1s
+```
+
+## HTTP API
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| `GET` | `/api/health` | 健康与版本 |
+| `GET` | `/api/portfolio` | 持仓与交易快照 |
+| `POST` | `/api/transactions` | 新增交易 |
+| `GET` | `/api/funds/{code}/nav` | 基金历史净值 |
+| `POST` | `/api/quant/backtest` | 策略回测 |
+| `POST` | `/api/quant/optimize` | Walk-Forward |
+| `POST` | `/api/storage/backup` | 创建数据库备份 |
+| `GET` | `/api/storage/export` | 导出无密钥持仓 JSON |
+| `GET/PUT` | `/api/settings/{namespace}` | 本地配置 |
+
+## Python 旧版
+
+`src/`、`tests/` 与 `pyproject.toml` 保留为 `0.2.x` 兼容实现，包含尚未迁移到 Go 的 A 股、新闻与模型分析功能。它不再是默认启动路径；新功能和性能优化优先进入 Go 版本。
